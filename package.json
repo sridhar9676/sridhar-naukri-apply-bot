@@ -1,0 +1,21 @@
+{
+  "name": "apply-naukri-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "fetch-jobs": "npx cypress run --spec cypress/e2e/fetchJobLinks.js",
+    "apply-jobs": "node cypress/e2e/applyJobs.js",
+    "run-all": "npm run fetch-jobs && npm run apply-jobs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Automates the job application process on Naukri.com using Puppeteer and Cypress.",
+  "devDependencies": {
+    "cypress": "^13.11.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "puppeteer": "^22.11.2"
+  }
+}
