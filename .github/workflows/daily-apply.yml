@@ -1,0 +1,52 @@
+name: Daily Naukri Auto-Apply
+
+on:
+  schedule:
+    # 9 AM IST = 3:30 AM UTC
+    - cron: '30 3 * * *'
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run bot with virtual display
+        uses: coactions/setup-xvfb@v1
+        env:
+          NAUKRI_USERNAME: ${{ secrets.NAUKRI_USERNAME }}
+          NAUKRI_PASSWORD: ${{ secrets.NAUKRI_PASSWORD }}
+          JOB_KEYWORDS: ${{ secrets.JOB_KEYWORDS }}
+          JOB_LOCATION: ${{ secrets.JOB_LOCATION }}
+          JOB_EXPERIENCE: ${{ secrets.JOB_EXPERIENCE }}
+          JOB_AGE: ${{ secrets.JOB_AGE }}
+          NOTICE_PERIOD: ${{ secrets.NOTICE_PERIOD }}
+          CURRENT_CTC: ${{ secrets.CURRENT_CTC }}
+          EXPECTED_CTC: ${{ secrets.EXPECTED_CTC }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          SMTP_HOST: smtp.gmail.com
+          SMTP_PORT: '587'
+          HEADLESS: 'false'
+        with:
+          run: node scheduler.js --once
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-report
+          path: application-report.json
+          retention-days: 7

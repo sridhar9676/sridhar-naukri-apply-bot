@@ -1,4 +1,6 @@
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
 const fs = require('fs');
 require('dotenv').config();
 
@@ -201,8 +203,8 @@ async function runBot() {
   console.log(`Expected CTC:   ${expectedCTC} LPA\n`);
 
   const browser = await puppeteer.launch({
-    headless: false,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--start-maximized'],
+    headless: process.env.HEADLESS === 'true' ? 'new' : false,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--start-maximized', '--disable-blink-features=AutomationControlled'],
   });
   const page = await browser.newPage();
   await page.setViewport({ width: 1366, height: 768 });

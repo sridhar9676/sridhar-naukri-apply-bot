@@ -6,7 +6,12 @@
     "start": "node run.js",
     "schedule": "node scheduler.js"
   },
-  "keywords": ["naukri", "job-automation", "puppeteer", "auto-apply"],
+  "keywords": [
+    "naukri",
+    "job-automation",
+    "puppeteer",
+    "auto-apply"
+  ],
   "author": "",
   "license": "MIT",
   "description": "Auto-apply to jobs on Naukri.com — searches, filters, and applies with one command.",
@@ -14,6 +19,8 @@
     "dotenv": "^16.4.5",
     "node-cron": "^3.0.3",
     "nodemailer": "^6.9.13",
-    "puppeteer": "^22.11.2"
+    "puppeteer": "^22.11.2",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }

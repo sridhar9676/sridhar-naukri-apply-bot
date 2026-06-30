@@ -124,9 +124,14 @@ if (!cron.validate(SCHEDULE)) {
 console.log(`Naukri Auto-Apply Bot Scheduler`);
 console.log(`Schedule: ${SCHEDULE}`);
 console.log(`Email to: ${EMAIL_TO || '(not configured)'}`);
-console.log(`Waiting for next scheduled run...\n`);
-
-// Run immediately on first start, then on schedule
-execute().then(() => {
-  cron.schedule(SCHEDULE, execute);
-});
+// If --once flag, run once and exit (for CI/cloud)
+if (process.argv.includes('--once')) {
+  console.log('Running once (CI mode)...\n');
+  execute().then(() => process.exit(0)).catch(() => process.exit(1));
+} else {
+  console.log(`Waiting for next scheduled run...\n`);
+  // Run immediately on first start, then on schedule
+  execute().then(() => {
+    cron.schedule(SCHEDULE, execute);
+  });
+}
