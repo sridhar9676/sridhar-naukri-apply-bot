@@ -1,21 +1,19 @@
 {
-  "name": "apply-naukri-bot",
-  "version": "1.0.0",
-  "main": "index.js",
+  "name": "sridhar-naukri-apply-bot",
+  "version": "2.1.0",
+  "main": "run.js",
   "scripts": {
-    "fetch-jobs": "npx cypress run --spec cypress/e2e/fetchJobLinks.js",
-    "apply-jobs": "node cypress/e2e/applyJobs.js",
-    "run-all": "npm run fetch-jobs && npm run apply-jobs"
+    "start": "node run.js",
+    "schedule": "node scheduler.js"
   },
-  "keywords": [],
+  "keywords": ["naukri", "job-automation", "puppeteer", "auto-apply"],
   "author": "",
-  "license": "ISC",
-  "description": "Automates the job application process on Naukri.com using Puppeteer and Cypress.",
-  "devDependencies": {
-    "cypress": "^13.11.0"
-  },
+  "license": "MIT",
+  "description": "Auto-apply to jobs on Naukri.com — searches, filters, and applies with one command.",
   "dependencies": {
     "dotenv": "^16.4.5",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.13",
     "puppeteer": "^22.11.2"
   }
 }

@@ -1,7 +1,5 @@
 node_modules/
 .env
-cypress/videos/
-cypress/screenshots/
-cypress/fixtures/internalSiteJobs.json
-cypress/fixtures/externalSiteJobs.json
+screenshots/
+application-report.json
 error_screenshot_*.png
