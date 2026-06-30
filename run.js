@@ -267,9 +267,13 @@ async function runBot() {
       await page.goto(jobLink, { waitUntil: 'networkidle2', timeout: 30000 });
       await delay(3000);
 
-      const jobTitle = await page.evaluate(() => {
-        const el = document.querySelector('h1, .jd-header-title');
-        return el ? el.textContent.trim() : 'Unknown';
+      const { jobTitle, company } = await page.evaluate(() => {
+        const titleEl = document.querySelector('h1, .jd-header-title');
+        const companyEl = document.querySelector('a[href*="/company-jobs"], .jd-header-comp-name a, a[class*="comp-name"], .company-name');
+        return {
+          jobTitle: titleEl ? titleEl.textContent.trim() : 'Unknown',
+          company: companyEl ? companyEl.textContent.trim() : '',
+        };
       });
 
       // Detect button type
@@ -284,13 +288,13 @@ async function runBot() {
       });
 
       if (btn.type === 'external') {
-        console.log(`   ${jobTitle} → SKIP (company portal)`);
-        report.skippedExternal.push({ title: jobTitle, link: jobLink });
+        console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → SKIP (company portal)`);
+        report.skippedExternal.push({ title: jobTitle, company, link: jobLink });
         continue;
       }
       if (btn.type !== 'apply') {
-        console.log(`   ${jobTitle} → SKIP (no button)`);
-        report.skippedNoButton.push({ title: jobTitle, link: jobLink });
+        console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → SKIP (no button)`);
+        report.skippedNoButton.push({ title: jobTitle, company, link: jobLink });
         continue;
       }
 
@@ -306,14 +310,14 @@ async function runBot() {
       const result = await handleApplyForm(page, { noticePeriod, currentCTC, expectedCTC, experience });
 
       if (result === 'success') {
-        console.log(`   ${jobTitle} → ✓ APPLIED`);
-        report.applied.push({ title: jobTitle, link: jobLink });
+        console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ✓ APPLIED`);
+        report.applied.push({ title: jobTitle, company, link: jobLink });
       } else if (result === 'rejected') {
-        console.log(`   ${jobTitle} → ✗ REJECTED`);
-        report.failed.push({ title: jobTitle, link: jobLink, reason: 'rejected' });
+        console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ✗ REJECTED`);
+        report.failed.push({ title: jobTitle, company, link: jobLink, reason: 'rejected' });
       } else {
-        console.log(`   ${jobTitle} → ? UNCERTAIN`);
-        report.applied.push({ title: jobTitle, link: jobLink, note: 'uncertain' });
+        console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ? UNCERTAIN`);
+        report.applied.push({ title: jobTitle, company, link: jobLink, note: 'uncertain' });
       }
       await delay(3000);
     } catch (err) {

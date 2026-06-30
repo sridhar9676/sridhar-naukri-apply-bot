@@ -29,11 +29,11 @@ async function sendEmailReport(report) {
   const total = applied.length + skipped.length + (report.skippedNoButton || []).length + failed.length;
 
   const appliedList = applied.length > 0
-    ? applied.map((j, i) => `  ${i + 1}. ${j.title}${j.note ? ` (${j.note})` : ''}\n     ${j.link}`).join('\n')
+    ? applied.map((j, i) => `  ${i + 1}. ${j.title}${j.company ? ` — ${j.company}` : ''}${j.note ? ` (${j.note})` : ''}\n     ${j.link}`).join('\n')
     : '  None';
 
   const failedList = failed.length > 0
-    ? failed.map((j, i) => `  ${i + 1}. ${j.title || j.link} - ${j.reason || j.error}`).join('\n')
+    ? failed.map((j, i) => `  ${i + 1}. ${j.title || j.link}${j.company ? ` — ${j.company}` : ''} - ${j.reason || j.error}`).join('\n')
     : '  None';
 
   const date = new Date().toLocaleDateString('en-IN', { dateStyle: 'full' });
@@ -65,12 +65,16 @@ ${failedList}
   <tr><td><b>Failed/Rejected</b></td><td style="color:red;">${failed.length}</td></tr>
 </table>
 ${applied.length > 0 ? `
-<h3>Applied Jobs:</h3>
-<ol>${applied.map(j => `<li><a href="${j.link}">${j.title}</a>${j.note ? ` <em>(${j.note})</em>` : ''}</li>`).join('')}</ol>
+<h3>✅ Applied Jobs:</h3>
+<ol>${applied.map(j => `<li><a href="${j.link}">${j.title}</a>${j.company ? ` — <b>${j.company}</b>` : ''}${j.note ? ` <em>(${j.note})</em>` : ''}</li>`).join('')}</ol>
+` : ''}
+${skipped.length > 0 ? `
+<h3>⏭️ Skipped (Company Portal):</h3>
+<ol>${skipped.map(j => `<li><a href="${j.link}">${j.title}</a>${j.company ? ` — <b>${j.company}</b>` : ''}</li>`).join('')}</ol>
 ` : ''}
 ${failed.length > 0 ? `
-<h3>Failed Jobs:</h3>
-<ol>${failed.map(j => `<li>${j.title || j.link} — ${j.reason || j.error}</li>`).join('')}</ol>
+<h3>❌ Failed Jobs:</h3>
+<ol>${failed.map(j => `<li>${j.title || j.link}${j.company ? ` — <b>${j.company}</b>` : ''} — ${j.reason || j.error}</li>`).join('')}</ol>
 ` : ''}
 <hr><p style="color:gray;font-size:12px;">Sent by Naukri Auto-Apply Bot</p>
 `;
