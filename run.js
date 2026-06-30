@@ -303,10 +303,12 @@ async function runBot() {
   const keywords = process.env.JOB_KEYWORDS;
   const location = process.env.JOB_LOCATION;
   const experience = process.env.JOB_EXPERIENCE || '4';
-  const noticePeriod = process.env.NOTICE_PERIOD || '30';
+  const noticePeriod = (process.env.NOTICE_PERIOD || '30').replace(/\D/g, '') || '30';
   const currentCTC = process.env.CURRENT_CTC || '16';
   const expectedCTC = process.env.EXPECTED_CTC || '20';
   const jobAge = process.env.JOB_AGE || '3';
+  // Daily safety cap so we don't exhaust Naukri's per-day application limit.
+  const maxApplications = parseInt(process.env.MAX_APPLICATIONS || '50', 10);
 
   if (!username || !password || !keywords || !location) {
     console.error('Error: Missing required .env variables. See .env.example');
@@ -322,7 +324,8 @@ async function runBot() {
   console.log(`Posted within:  ${jobAge} days`);
   console.log(`Notice Period:  ${noticePeriod} days`);
   console.log(`Current CTC:    ${currentCTC} LPA`);
-  console.log(`Expected CTC:   ${expectedCTC} LPA\n`);
+  console.log(`Expected CTC:   ${expectedCTC} LPA`);
+  console.log(`Max apply/run:  ${maxApplications} jobs\n`);
 
   const browser = await puppeteer.launch({
     headless: process.env.HEADLESS === 'true' ? 'new' : false,
@@ -347,33 +350,91 @@ async function runBot() {
   await delay(10000);
   console.log('   Logged in.\n');
 
-  // Step 2: Search
-  console.log('[2/4] Searching jobs...');
-  const searchKeyword = keywords.split(',')[0].trim();
-  const searchLocation = location.split(',')[0].trim();
-  const keywordsSlug = searchKeyword.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  const locationSlug = searchLocation.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  const searchUrl = `https://www.naukri.com/${keywordsSlug}-jobs-in-${locationSlug}?experience=${experience}&jobAge=${jobAge}`;
+  // Step 2+3: Search across ALL keywords (batched) and merge unique job links.
+  // Naukri's search accepts multiple comma-separated keywords via the `k=` param
+  // and multiple locations via `l=`, so we batch keywords to minimize searches.
+  console.log('[2/4] Searching jobs across all keywords...');
+  const allKeywords = keywords.split(',').map(k => k.trim()).filter(Boolean);
+  const allLocations = location.split(',').map(l => l.trim()).filter(Boolean);
+  const locationSlug = allLocations[0].toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const locationParam = encodeURIComponent(allLocations.join(', '));
 
-  console.log(`   ${searchKeyword} | ${searchLocation} | ${experience} yrs | Last ${jobAge} days`);
-  await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-  await delay(5000);
-  await page.screenshot({ path: 'screenshots/search-results.png' });
+  // How many keywords to send per search (Naukri handles several at once).
+  const BATCH_SIZE = parseInt(process.env.KEYWORD_BATCH_SIZE || '4', 10);
+  const keywordBatches = [];
+  for (let b = 0; b < allKeywords.length; b += BATCH_SIZE) {
+    keywordBatches.push(allKeywords.slice(b, b + BATCH_SIZE));
+  }
 
-  // Step 3: Extract links
-  console.log('[3/4] Extracting job links...');
-  const jobLinks = await page.evaluate(() => {
-    const links = [];
-    document.querySelectorAll('a[href*="/job-listings-"], a[href*="/job/"]').forEach(el => {
-      let href = el.getAttribute('href');
-      if (!href) return;
-      if (!href.startsWith('http')) href = 'https://www.naukri.com' + href;
-      if (href.includes('naukri.com') && !links.includes(href)) links.push(href);
+  // Dedupe by Naukri job ID (falls back to full URL) so the same job
+  // returned by multiple searches is only applied to once.
+  const jobMap = new Map();
+  const jobKey = (url) => {
+    const m = url.match(/(\d{8,})/);
+    return m ? m[1] : url;
+  };
+
+  // Track exactly which keywords were successfully searched so none are missed.
+  const searchedKeywords = new Set();
+  const failedKeywords = new Set();
+
+  // Run a single Naukri search for a group of keywords and merge the results.
+  async function searchKeywords(group) {
+    const slug = group.join(' ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const kParam = encodeURIComponent(group.join(', '));
+    const searchUrl = `https://www.naukri.com/${slug}-jobs-in-${locationSlug}?k=${kParam}&l=${locationParam}&experience=${experience}&jobAge=${jobAge}`;
+    console.log(`   URL: ${searchUrl}`);
+    await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    await delay(3000);
+    const links = await page.evaluate(() => {
+      const out = [];
+      document.querySelectorAll('a[href*="/job-listings-"], a[href*="/job/"]').forEach(el => {
+        let href = el.getAttribute('href');
+        if (!href) return;
+        if (!href.startsWith('http')) href = 'https://www.naukri.com' + href;
+        if (href.includes('naukri.com')) out.push(href);
+      });
+      return out;
     });
-    return links;
-  });
+    let added = 0;
+    for (const l of links) {
+      const key = jobKey(l);
+      if (!jobMap.has(key)) { jobMap.set(key, l); added++; }
+    }
+    return { found: links.length, added };
+  }
 
-  console.log(`   Found ${jobLinks.length} jobs.\n`);
+  for (const batch of keywordBatches) {
+    try {
+      const { found, added } = await searchKeywords(batch);
+      batch.forEach(k => searchedKeywords.add(k));
+      console.log(`   [${batch.join(', ')}] → ${found} found, +${added} new (total unique: ${jobMap.size})`);
+    } catch (e) {
+      // A whole batch failed — retry each keyword on its own so we don't drop any.
+      console.log(`   [${batch.join(', ')}] → batch failed (${e.message}); retrying individually...`);
+      for (const kw of batch) {
+        try {
+          const { found, added } = await searchKeywords([kw]);
+          searchedKeywords.add(kw);
+          console.log(`      "${kw}" → ${found} found, +${added} new (total unique: ${jobMap.size})`);
+        } catch (e2) {
+          failedKeywords.add(kw);
+          console.log(`      "${kw}" → FAILED (${e2.message})`);
+        }
+      }
+    }
+  }
+
+  // Coverage report — confirm every keyword was actually searched.
+  console.log(`\n   Keyword coverage: ${searchedKeywords.size}/${allKeywords.length} searched.`);
+  if (failedKeywords.size > 0) {
+    console.log(`   ⚠️  Missed keywords (${failedKeywords.size}): ${[...failedKeywords].join(', ')}`);
+  } else {
+    console.log(`   ✅ All keywords searched — none missed.`);
+  }
+
+  const jobLinks = [...jobMap.values()];
+  console.log(`\n   Total unique jobs across all keywords: ${jobLinks.length}\n`);
   if (jobLinks.length === 0) {
     console.log(`No new jobs posted in the last ${jobAge} days. Check back later.`);
     await browser.close();
@@ -391,22 +452,41 @@ async function runBot() {
     const t = title.toLowerCase();
     // Exclude clearly irrelevant roles
     if (excludeWords.some(w => t.includes(w))) return false;
-    // Must contain at least one domain-specific word
+    // Keep if it has a domain-specific word (qa/test/sdet/automation/...)
     const hasDomainWord = domainWords.some(w => t.includes(w));
-    if (!hasDomainWord) return false;
-    // Must also match at least 2 words from any keyword
-    return relevanceTerms.some(term => {
-      const words = term.split(/\s+/);
-      const matched = words.filter(w => w.length > 2 && t.includes(w));
-      return matched.length >= 2;
-    });
+    // ...or if it matches at least one meaningful word from any keyword
+    const matchesKeyword = relevanceTerms.some(term =>
+      term.split(/\s+/).some(w => w.length > 2 && t.includes(w))
+    );
+    return hasDomainWord || matchesKeyword;
   }
 
   // Step 4: Apply
   console.log('[4/4] Applying...\n');
-  const report = { applied: [], skippedExternal: [], skippedNoButton: [], skippedIrrelevant: [], failed: [] };
+  console.log(`   Daily cap: will stop after ${maxApplications} successful applications.\n`);
+  const report = { applied: [], skippedExternal: [], skippedNoButton: [], skippedIrrelevant: [], skippedOld: [], failed: [] };
+
+  const maxJobAgeDays = parseInt(jobAge, 10);
+  // Convert Naukri's "Posted: X ago" text into a number of days.
+  // Returns null when the text can't be parsed (then we don't skip).
+  function parsePostedDays(text) {
+    if (!text) return null;
+    const t = text.toLowerCase();
+    if (t.includes('just now') || t.includes('today') || t.includes('few hour') || t.includes('hour')) return 0;
+    const num = parseInt((t.match(/\d+/) || ['0'])[0], 10);
+    if (t.includes('day')) return num;
+    if (t.includes('week')) return num * 7;
+    if (t.includes('month')) return num * 30;
+    if (t.includes('year')) return num * 365;
+    return null;
+  }
 
   for (let i = 0; i < jobLinks.length; i++) {
+    // Stop once we hit the daily application cap.
+    if (report.applied.length >= maxApplications) {
+      console.log(`\n   Reached daily cap of ${maxApplications} applications — stopping (${jobLinks.length - i} jobs left unprocessed).`);
+      break;
+    }
     const jobLink = jobLinks[i];
     try {
       console.log(`   [${i + 1}/${jobLinks.length}] Opening...`);
@@ -426,6 +506,18 @@ async function runBot() {
       if (!isRelevantJob(jobTitle)) {
         console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → SKIP (not relevant)`);
         report.skippedIrrelevant.push({ title: jobTitle, company, link: jobLink });
+        continue;
+      }
+
+      // Skip jobs posted more than JOB_AGE days ago (Naukri's URL filter is unreliable)
+      const postedText = await page.evaluate(() => {
+        const m = document.body.innerText.match(/posted[:\s]+([^|\n\r]+)/i);
+        return m ? m[1].trim() : '';
+      });
+      const postedDays = parsePostedDays(postedText);
+      if (postedDays !== null && postedDays > maxJobAgeDays) {
+        console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → SKIP (posted ${postedText}, older than ${maxJobAgeDays}d)`);
+        report.skippedOld.push({ title: jobTitle, company, link: jobLink, posted: postedText });
         continue;
       }
 
@@ -532,6 +624,7 @@ async function runBot() {
   console.log(`Applied:             ${report.applied.length}`);
   console.log(`Skipped (external):  ${report.skippedExternal.length}`);
   console.log(`Skipped (irrelevant):${report.skippedIrrelevant.length}`);
+  console.log(`Skipped (too old):   ${report.skippedOld.length}`);
   console.log(`Failed/Rejected:     ${report.failed.length}`);
   console.log('========================================\n');
 
