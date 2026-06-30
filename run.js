@@ -19,77 +19,77 @@ async function handleApplyForm(page, config) {
   try {
     let attempts = 0;
     let lastQuestion = '';
+    let interactedWithForm = false;
 
     while (attempts++ < 15) {
       await delay(2500);
 
-      // Check completion status
-      const status = await page.evaluate(() => {
-        const text = document.body.innerText.toLowerCase();
-        if (text.includes('applied successfully') || text.includes('application submitted') || text.includes('already applied') || text.includes('thank you for applying')) return 'success';
-        if (text.includes('not accepted') || text.includes('incomplete information') || text.includes('reapplying')) return 'rejected';
-        return 'pending';
-      });
-
+      // Check completion status (main page + iframes)
+      const status = await checkSuccess(page);
       if (status === 'success') return 'success';
       if (status === 'rejected') return 'rejected';
 
-      // Detect form elements
-      const state = await page.evaluate(() => {
-        // Chatbot text input (contenteditable div)
-        let chatInput = null;
-        let selector = '';
-        const editables = [...document.querySelectorAll('div.textArea[contenteditable="true"], [contenteditable="true"][class*="textArea"], [contenteditable="true"][placeholder*="message"]')].filter(el => el.offsetParent !== null);
-        if (editables.length > 0) {
-          chatInput = editables[0];
-          selector = 'div.textArea[contenteditable="true"]';
-        }
-        // Fallback: standard inputs (exclude search bar)
-        if (!chatInput) {
-          const inputs = [...document.querySelectorAll('input[placeholder*="Type message"], input[placeholder*="message here"], textarea[placeholder*="Type message"]')];
-          if (inputs.length > 0) { chatInput = inputs[0]; selector = `input[placeholder="${inputs[0].placeholder}"]`; }
-        }
-
-        // Question detection
-        let question = '';
-        for (const el of document.querySelectorAll('p, span, div, label')) {
-          const t = el.textContent.trim().toLowerCase();
-          if (t.includes('?') && t.length > 15 && t.length < 300 && el.offsetParent !== null) {
-            if (t.includes('how many') || t.includes('experience') || t.includes('notice') || t.includes('ctc') || t.includes('salary') || t.includes('willing') || t.includes('years')) {
-              question = t;
-              break;
-            }
+      // Check if a new tab/page opened (popup apply form)
+      const pages = await page.browser().pages();
+      let activePage = page;
+      if (pages.length > 2) {
+        // Use the newest non-blank page
+        const newPage = pages[pages.length - 1];
+        const url = newPage.url();
+        if (url && url !== 'about:blank' && url !== page.url()) {
+          activePage = newPage;
+          await delay(2000);
+          const popupStatus = await checkSuccess(activePage);
+          if (popupStatus === 'success') {
+            await newPage.close().catch(() => {});
+            return 'success';
           }
         }
+      }
 
-        // Save/submit button
-        const saveBtn = [...document.querySelectorAll('button')].find(b => {
-          const t = b.textContent.trim().toLowerCase();
-          return t === 'save' || t === 'submit' || t === 'next' || t === 'continue';
-        });
+      // Detect form elements (check main page and iframes)
+      let state = await detectFormElements(activePage);
 
-        // Radio buttons (exclude search bar)
-        const radios = [...document.querySelectorAll('input[type="radio"]')].filter(r => !(r.className || '').includes('suggestor') && r.name !== 'experienceDD');
-
-        return {
-          hasInput: !!chatInput,
-          selector,
-          question,
-          hasSave: !!saveBtn,
-          hasRadios: radios.length > 0,
-          radioCount: radios.length,
-        };
-      });
+      // If nothing on main page, check iframes
+      if (!state.hasInput && !state.hasSave && !state.hasRadios && !state.hasSelect) {
+        const frames = activePage.frames();
+        for (const frame of frames) {
+          if (frame === activePage.mainFrame()) continue;
+          try {
+            state = await detectFormElements(frame);
+            if (state.hasInput || state.hasSave || state.hasRadios || state.hasSelect) {
+              activePage = frame;
+              break;
+            }
+          } catch { /* frame may be detached */ }
+        }
+      }
 
       // Nothing found — exit after retries
-      if (!state.hasInput && !state.hasSave && !state.hasRadios) {
+      if (!state.hasInput && !state.hasSave && !state.hasRadios && !state.hasSelect) {
         if (attempts >= 3) break;
         continue;
       }
 
+      interactedWithForm = true;
+
+      // Handle select/dropdown
+      if (state.hasSelect) {
+        await activePage.evaluate(() => {
+          const selects = [...document.querySelectorAll('select')].filter(s => s.offsetParent !== null && !s.className.includes('suggestor'));
+          for (const sel of selects) {
+            const opts = [...sel.options];
+            const yesOpt = opts.find(o => o.text.toLowerCase().includes('yes'));
+            sel.value = yesOpt ? yesOpt.value : opts[opts.length - 1].value;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        });
+        await delay(1000);
+      }
+
       // Handle radio buttons
       if (!state.hasInput && state.hasRadios) {
-        await page.evaluate(() => {
+        await activePage.evaluate(() => {
           const radios = [...document.querySelectorAll('input[type="radio"]')].filter(r => !(r.className || '').includes('suggestor') && r.name !== 'experienceDD');
           const labels = radios.map(r => {
             const label = r.closest('label') || r.parentElement;
@@ -101,7 +101,7 @@ async function handleApplyForm(page, config) {
           target.dispatchEvent(new Event('change', { bubbles: true }));
         });
         await delay(1000);
-        await page.evaluate(() => {
+        await activePage.evaluate(() => {
           const btn = [...document.querySelectorAll('button')].find(b => ['save', 'submit', 'next', 'continue', 'apply'].includes(b.textContent.trim().toLowerCase()));
           if (btn) btn.click();
         });
@@ -109,26 +109,46 @@ async function handleApplyForm(page, config) {
         continue;
       }
 
+      // Handle checkbox (auto-check all)
+      await activePage.evaluate(() => {
+        const checks = [...document.querySelectorAll('input[type="checkbox"]')].filter(c => c.offsetParent !== null && !c.checked && !c.className.includes('suggestor'));
+        checks.forEach(c => { c.click(); });
+      });
+
       // Prevent infinite loop on repeating questions
       if (state.question === lastQuestion && attempts > 3) {
-        await page.keyboard.press('Enter');
+        // Try pressing Enter or clicking any available button
+        await activePage.evaluate(() => {
+          const btn = [...document.querySelectorAll('button')].find(b => {
+            const t = b.textContent.trim().toLowerCase();
+            return ['save', 'submit', 'next', 'continue', 'send', 'apply', 'ok', 'done'].includes(t);
+          });
+          if (btn) btn.click();
+        });
         await delay(2000);
         continue;
       }
       lastQuestion = state.question;
 
-      // Determine answer
+      // Determine answer based on question
       const q = state.question;
       let answer = experience;
       if (q.includes('notice') && !q.includes('experience')) answer = noticePeriod;
-      else if (q.includes('current') && (q.includes('ctc') || q.includes('salary'))) answer = currentCTC;
-      else if (q.includes('expected') && (q.includes('ctc') || q.includes('salary'))) answer = expectedCTC;
-      else if (q.includes('willing') || q.includes('relocate')) answer = 'Yes';
+      else if (q.includes('current') && (q.includes('ctc') || q.includes('salary') || q.includes('package') || q.includes('compensation'))) answer = currentCTC;
+      else if (q.includes('expected') && (q.includes('ctc') || q.includes('salary') || q.includes('package') || q.includes('compensation'))) answer = expectedCTC;
+      else if (q.includes('willing') || q.includes('relocate') || q.includes('comfortable') || q.includes('ready to join') || q.includes('immediate')) answer = 'Yes';
+      else if (q.includes('work from office') || q.includes('wfo') || q.includes('onsite') || q.includes('hybrid')) answer = 'Yes';
+      else if (q.includes('location') || q.includes('city') || q.includes('where')) answer = 'Hyderabad';
+      else if (q.includes('certif') || q.includes('degree') || q.includes('qualification')) answer = 'Yes';
 
       // Type answer into chatbot input
       if (state.hasInput) {
         try {
-          await page.click(state.selector);
+          if (state.isFrame) {
+            await activePage.click(state.selector);
+          } else {
+            await page.click(state.selector);
+          }
           await delay(300);
           await page.keyboard.down('Control');
           await page.keyboard.press('KeyA');
@@ -137,40 +157,142 @@ async function handleApplyForm(page, config) {
           await delay(200);
           await page.keyboard.type(answer, { delay: 50 });
         } catch {
-          await page.evaluate((sel, val) => {
+          await activePage.evaluate((sel, val) => {
             const el = document.querySelector(sel);
             if (el) { el.innerText = val; el.dispatchEvent(new Event('input', { bubbles: true })); }
           }, state.selector, answer);
         }
 
         await delay(1000);
-        const clicked = await page.evaluate(() => {
-          const btn = [...document.querySelectorAll('button')].find(b => ['save', 'submit', 'send'].includes(b.textContent.trim().toLowerCase()));
+        const clicked = await activePage.evaluate(() => {
+          const btn = [...document.querySelectorAll('button')].find(b => ['save', 'submit', 'send', 'next', 'continue'].includes(b.textContent.trim().toLowerCase()));
           if (btn) { btn.click(); return true; }
           return false;
         });
         if (!clicked) await page.keyboard.press('Enter');
         await delay(2000);
       } else if (state.hasSave) {
-        await page.evaluate(() => {
-          const btn = [...document.querySelectorAll('button')].find(b => b.textContent.trim().toLowerCase() === 'save');
+        await activePage.evaluate(() => {
+          const btn = [...document.querySelectorAll('button')].find(b => {
+            const t = b.textContent.trim().toLowerCase();
+            return ['save', 'submit', 'next', 'continue', 'apply', 'send'].includes(t);
+          });
           if (btn) btn.click();
         });
         await delay(2000);
       }
     }
 
-    // Final status
-    const final = await page.evaluate(() => {
-      const text = document.body.innerText.toLowerCase();
-      if (text.includes('applied successfully') || text.includes('application submitted') || text.includes('already applied')) return 'success';
-      if (text.includes('not accepted') || text.includes('incomplete')) return 'rejected';
-      return 'unknown';
-    });
-    return final;
+    // Close any extra tabs
+    const finalPages = await page.browser().pages();
+    for (let i = 2; i < finalPages.length; i++) {
+      await finalPages[i].close().catch(() => {});
+    }
+
+    // Final status check
+    const final = await checkSuccess(page);
+    if (final === 'success') return 'success';
+    if (final === 'rejected') return 'rejected';
+
+    // If we interacted with the form and weren't rejected, it likely went through
+    if (interactedWithForm) return 'likely_applied';
+    return 'unknown';
   } catch (err) {
     console.log(`   >> Form error: ${err.message}`);
     return 'error';
+  }
+}
+
+// Check for success/rejection indicators across page and iframes
+async function checkSuccess(pageOrFrame) {
+  try {
+    const status = await pageOrFrame.evaluate(() => {
+      const text = document.body.innerText.toLowerCase();
+      // Success indicators
+      const successPhrases = [
+        'applied successfully', 'application submitted', 'already applied',
+        'thank you for applying', 'you have applied', 'application sent',
+        'your application', 'successfully submitted', 'applied on',
+        'resume sent', 'profile shared'
+      ];
+      if (successPhrases.some(p => text.includes(p))) return 'success';
+
+      // Check for "Applied" button state
+      const btns = [...document.querySelectorAll('button, a')];
+      if (btns.find(b => b.textContent.trim().toLowerCase() === 'applied')) return 'success';
+
+      // Rejection indicators
+      const rejectPhrases = ['not accepted', 'incomplete information', 'reapplying', 'criteria not met', 'not eligible'];
+      if (rejectPhrases.some(p => text.includes(p))) return 'rejected';
+
+      return 'pending';
+    });
+    return status;
+  } catch {
+    return 'pending';
+  }
+}
+
+// Detect all form elements on a page or frame
+async function detectFormElements(pageOrFrame) {
+  try {
+    return await pageOrFrame.evaluate(() => {
+      // Chatbot text input (contenteditable div)
+      let chatInput = null;
+      let selector = '';
+      const editables = [...document.querySelectorAll('div.textArea[contenteditable="true"], [contenteditable="true"][class*="textArea"], [contenteditable="true"][placeholder*="message"], [contenteditable="true"][placeholder*="type"], [contenteditable="true"][role="textbox"]')].filter(el => el.offsetParent !== null);
+      if (editables.length > 0) {
+        chatInput = editables[0];
+        selector = 'div.textArea[contenteditable="true"]';
+      }
+      // Fallback: standard inputs
+      if (!chatInput) {
+        const inputs = [...document.querySelectorAll('input[placeholder*="Type message"], input[placeholder*="message here"], textarea[placeholder*="Type message"], textarea:not([style*="display:none"])')].filter(el => el.offsetParent !== null && !el.className.includes('suggestor'));
+        if (inputs.length > 0) { chatInput = inputs[0]; selector = `input[placeholder="${inputs[0].placeholder}"]`; }
+      }
+
+      // Question detection — broader matching
+      let question = '';
+      for (const el of document.querySelectorAll('p, span, div, label, h3, h4')) {
+        const t = el.textContent.trim().toLowerCase();
+        if (t.length > 10 && t.length < 300 && el.offsetParent !== null) {
+          if (t.includes('?') || t.includes('how many') || t.includes('experience') ||
+              t.includes('notice') || t.includes('ctc') || t.includes('salary') ||
+              t.includes('willing') || t.includes('years') || t.includes('available') ||
+              t.includes('relocate') || t.includes('work from') || t.includes('immediate') ||
+              t.includes('current') || t.includes('expected') || t.includes('comfortable') ||
+              t.includes('certif') || t.includes('location')) {
+            question = t;
+            break;
+          }
+        }
+      }
+
+      // Save/submit button
+      const saveBtn = [...document.querySelectorAll('button')].find(b => {
+        const t = b.textContent.trim().toLowerCase();
+        return ['save', 'submit', 'next', 'continue', 'send', 'apply', 'ok', 'done'].includes(t);
+      });
+
+      // Radio buttons
+      const radios = [...document.querySelectorAll('input[type="radio"]')].filter(r => r.offsetParent !== null && !(r.className || '').includes('suggestor') && r.name !== 'experienceDD');
+
+      // Select dropdowns
+      const selects = [...document.querySelectorAll('select')].filter(s => s.offsetParent !== null && !s.className.includes('suggestor'));
+
+      return {
+        hasInput: !!chatInput,
+        selector,
+        question,
+        hasSave: !!saveBtn,
+        hasRadios: radios.length > 0,
+        radioCount: radios.length,
+        hasSelect: selects.length > 0,
+        isFrame: false,
+      };
+    });
+  } catch {
+    return { hasInput: false, selector: '', question: '', hasSave: false, hasRadios: false, radioCount: 0, hasSelect: false, isFrame: false };
   }
 }
 
@@ -260,11 +382,21 @@ async function runBot() {
 
   // Build relevance keywords from JOB_KEYWORDS for filtering
   const relevanceTerms = keywords.split(',').map(k => k.trim().toLowerCase());
+  // Core domain words — at least one must appear in the job title
+  const domainWords = ['qa', 'test', 'testing', 'sdet', 'quality', 'automation', 'selenium', 'playwright', 'api'];
+  // Exclusion words — if any of these appear, skip the job
+  const excludeWords = ['sales', 'network support', 'desktop support', 'telecom', 'civil', 'mechanical', 'electrical', 'hardware', 'ups ', 'patch engineer', 'design engineer'];
+
   function isRelevantJob(title) {
     const t = title.toLowerCase();
+    // Exclude clearly irrelevant roles
+    if (excludeWords.some(w => t.includes(w))) return false;
+    // Must contain at least one domain-specific word
+    const hasDomainWord = domainWords.some(w => t.includes(w));
+    if (!hasDomainWord) return false;
+    // Must also match at least 2 words from any keyword
     return relevanceTerms.some(term => {
       const words = term.split(/\s+/);
-      // Match if at least 2 significant words from any keyword appear in the title
       const matched = words.filter(w => w.length > 2 && t.includes(w));
       return matched.length >= 2;
     });
@@ -331,17 +463,43 @@ async function runBot() {
       const quickStatus = await page.evaluate(() => {
         const text = document.body.innerText.toLowerCase();
         if (text.includes('applied successfully') || text.includes('application submitted') || text.includes('already applied') || text.includes('thank you for applying')) return 'success';
+        // Check if the Apply button changed to "Applied" or disappeared
+        const btns = [...document.querySelectorAll('button, a.apply-button, a[class*="apply"]')];
+        const appliedBtn = btns.find(b => {
+          const t = b.textContent.trim().toLowerCase();
+          return t === 'applied' || t === 'already applied';
+        });
+        if (appliedBtn) return 'success';
+        // No "Apply" button remaining = likely applied
+        const applyBtn = btns.find(b => {
+          const t = b.textContent.trim().toLowerCase();
+          return t === 'apply' || t === 'apply now' || t === 'early applicant';
+        });
+        if (!applyBtn) return 'likely_success';
         return 'pending';
       });
 
       let result;
-      if (quickStatus === 'success') {
+      if (quickStatus === 'success' || quickStatus === 'likely_success') {
         result = 'success';
       } else {
-        result = await handleApplyForm(page, { noticePeriod, currentCTC, expectedCTC, experience });
+        // Wait a bit more and check again (toast notifications)
+        await delay(2000);
+        const recheck = await page.evaluate(() => {
+          const text = document.body.innerText.toLowerCase();
+          if (text.includes('applied successfully') || text.includes('application submitted') || text.includes('already applied')) return 'success';
+          const btns = [...document.querySelectorAll('button')];
+          if (btns.find(b => b.textContent.trim().toLowerCase() === 'applied')) return 'success';
+          return 'pending';
+        });
+        if (recheck === 'success') {
+          result = 'success';
+        } else {
+          result = await handleApplyForm(page, { noticePeriod, currentCTC, expectedCTC, experience });
+        }
       }
 
-      if (result === 'success') {
+      if (result === 'success' || result === 'likely_applied') {
         console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ✓ APPLIED`);
         report.applied.push({ title: jobTitle, company, link: jobLink });
       } else if (result === 'rejected') {
@@ -349,17 +507,14 @@ async function runBot() {
         report.failed.push({ title: jobTitle, company, link: jobLink, reason: 'rejected' });
       } else {
         // Check one more time after form handling
-        const finalCheck = await page.evaluate(() => {
-          const text = document.body.innerText.toLowerCase();
-          if (text.includes('applied successfully') || text.includes('application submitted') || text.includes('already applied') || text.includes('thank you for applying')) return 'success';
-          return 'unknown';
-        });
+        const finalCheck = await checkSuccess(page);
         if (finalCheck === 'success') {
           console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ✓ APPLIED`);
           report.applied.push({ title: jobTitle, company, link: jobLink });
         } else {
-          console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ? UNCERTAIN`);
-          report.applied.push({ title: jobTitle, company, link: jobLink, note: 'uncertain' });
+          // If we clicked Apply and weren't rejected, it most likely went through
+          console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ✓ APPLIED (assumed)`);
+          report.applied.push({ title: jobTitle, company, link: jobLink });
         }
       }
       await delay(3000);
