@@ -2,8 +2,9 @@ name: Daily Naukri Auto-Apply
 
 on:
   schedule:
-    # 9 AM IST = 3:30 AM UTC
-    - cron: '30 3 * * *'
+    - cron: '27 4 * * *'   # ~10:00 AM IST
+    - cron: '58 8 * * *'   # ~2:30 PM IST
+    - cron: '31 12 * * *'  # ~6:30 PM IST
   workflow_dispatch: # Allow manual trigger from GitHub UI
 
 jobs:
