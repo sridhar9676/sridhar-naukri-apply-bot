@@ -258,9 +258,21 @@ async function runBot() {
     process.exit(0);
   }
 
+  // Build relevance keywords from JOB_KEYWORDS for filtering
+  const relevanceTerms = keywords.split(',').map(k => k.trim().toLowerCase());
+  function isRelevantJob(title) {
+    const t = title.toLowerCase();
+    return relevanceTerms.some(term => {
+      const words = term.split(/\s+/);
+      // Match if at least 2 significant words from any keyword appear in the title
+      const matched = words.filter(w => w.length > 2 && t.includes(w));
+      return matched.length >= 2;
+    });
+  }
+
   // Step 4: Apply
   console.log('[4/4] Applying...\n');
-  const report = { applied: [], skippedExternal: [], skippedNoButton: [], failed: [] };
+  const report = { applied: [], skippedExternal: [], skippedNoButton: [], skippedIrrelevant: [], failed: [] };
 
   for (let i = 0; i < jobLinks.length; i++) {
     const jobLink = jobLinks[i];
@@ -277,6 +289,13 @@ async function runBot() {
           company: companyEl ? companyEl.textContent.trim() : '',
         };
       });
+
+      // Skip irrelevant jobs
+      if (!isRelevantJob(jobTitle)) {
+        console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → SKIP (not relevant)`);
+        report.skippedIrrelevant.push({ title: jobTitle, company, link: jobLink });
+        continue;
+      }
 
       // Detect button type
       const btn = await page.evaluate(() => {
@@ -308,8 +327,19 @@ async function runBot() {
       }, btn.index);
       await delay(4000);
 
-      // Handle form
-      const result = await handleApplyForm(page, { noticePeriod, currentCTC, expectedCTC, experience });
+      // Check if already applied successfully (no chatbot needed)
+      const quickStatus = await page.evaluate(() => {
+        const text = document.body.innerText.toLowerCase();
+        if (text.includes('applied successfully') || text.includes('application submitted') || text.includes('already applied') || text.includes('thank you for applying')) return 'success';
+        return 'pending';
+      });
+
+      let result;
+      if (quickStatus === 'success') {
+        result = 'success';
+      } else {
+        result = await handleApplyForm(page, { noticePeriod, currentCTC, expectedCTC, experience });
+      }
 
       if (result === 'success') {
         console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ✓ APPLIED`);
@@ -318,8 +348,19 @@ async function runBot() {
         console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ✗ REJECTED`);
         report.failed.push({ title: jobTitle, company, link: jobLink, reason: 'rejected' });
       } else {
-        console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ? UNCERTAIN`);
-        report.applied.push({ title: jobTitle, company, link: jobLink, note: 'uncertain' });
+        // Check one more time after form handling
+        const finalCheck = await page.evaluate(() => {
+          const text = document.body.innerText.toLowerCase();
+          if (text.includes('applied successfully') || text.includes('application submitted') || text.includes('already applied') || text.includes('thank you for applying')) return 'success';
+          return 'unknown';
+        });
+        if (finalCheck === 'success') {
+          console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ✓ APPLIED`);
+          report.applied.push({ title: jobTitle, company, link: jobLink });
+        } else {
+          console.log(`   ${jobTitle}${company ? ` (${company})` : ''} → ? UNCERTAIN`);
+          report.applied.push({ title: jobTitle, company, link: jobLink, note: 'uncertain' });
+        }
       }
       await delay(3000);
     } catch (err) {
@@ -335,6 +376,7 @@ async function runBot() {
   console.log(`Total Jobs:          ${jobLinks.length}`);
   console.log(`Applied:             ${report.applied.length}`);
   console.log(`Skipped (external):  ${report.skippedExternal.length}`);
+  console.log(`Skipped (irrelevant):${report.skippedIrrelevant.length}`);
   console.log(`Failed/Rejected:     ${report.failed.length}`);
   console.log('========================================\n');
 

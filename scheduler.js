@@ -25,8 +25,9 @@ async function sendEmailReport(report) {
 
   const applied = report.applied || [];
   const skipped = report.skippedExternal || [];
+  const irrelevant = report.skippedIrrelevant || [];
   const failed = report.failed || [];
-  const total = applied.length + skipped.length + (report.skippedNoButton || []).length + failed.length;
+  const total = applied.length + skipped.length + irrelevant.length + (report.skippedNoButton || []).length + failed.length;
 
   const appliedList = applied.length > 0
     ? applied.map((j, i) => `  ${i + 1}. ${j.title}${j.company ? ` — ${j.company}` : ''}${j.note ? ` (${j.note})` : ''}\n     ${j.link}`).join('\n')
@@ -62,6 +63,7 @@ ${failedList}
   <tr><td><b>Total Jobs Found</b></td><td>${total}</td></tr>
   <tr><td><b>Applied</b></td><td style="color:green;font-weight:bold;">${applied.length}</td></tr>
   <tr><td><b>Skipped (external)</b></td><td>${skipped.length}</td></tr>
+  <tr><td><b>Skipped (irrelevant)</b></td><td>${irrelevant.length}</td></tr>
   <tr><td><b>Failed/Rejected</b></td><td style="color:red;">${failed.length}</td></tr>
 </table>
 ${applied.length > 0 ? `
@@ -71,6 +73,10 @@ ${applied.length > 0 ? `
 ${skipped.length > 0 ? `
 <h3>⏭️ Skipped (Company Portal):</h3>
 <ol>${skipped.map(j => `<li><a href="${j.link}">${j.title}</a>${j.company ? ` — <b>${j.company}</b>` : ''}</li>`).join('')}</ol>
+` : ''}
+${irrelevant.length > 0 ? `
+<h3>🚫 Skipped (Not Relevant):</h3>
+<ol>${irrelevant.map(j => `<li><a href="${j.link}">${j.title}</a>${j.company ? ` — <b>${j.company}</b>` : ''}</li>`).join('')}</ol>
 ` : ''}
 ${failed.length > 0 ? `
 <h3>❌ Failed Jobs:</h3>
