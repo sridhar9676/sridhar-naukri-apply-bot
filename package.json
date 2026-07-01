@@ -4,7 +4,8 @@
   "main": "run.js",
   "scripts": {
     "start": "node run.js",
-    "schedule": "node scheduler.js"
+    "schedule": "node scheduler.js",
+    "run-all": "node scheduler.js --once"
   },
   "keywords": [
     "naukri",
