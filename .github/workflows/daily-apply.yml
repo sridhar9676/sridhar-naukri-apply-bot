@@ -12,7 +12,7 @@ on:
 jobs:
   apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +43,8 @@ jobs:
           SMTP_HOST: smtp.gmail.com
           SMTP_PORT: '587'
           HEADLESS: 'false'
+          MAX_APPLICATIONS: '15'
+          MAX_RUNTIME_MINUTES: '11'
         with:
           run: node scheduler.js --once
 
