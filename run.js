@@ -386,22 +386,31 @@ async function runBot() {
     console.log(`   URL: ${searchUrl}`);
     await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
     await delay(3000);
-    const links = await page.evaluate(() => {
+    const cards = await page.evaluate(() => {
       const out = [];
       document.querySelectorAll('a[href*="/job-listings-"], a[href*="/job/"]').forEach(el => {
         let href = el.getAttribute('href');
         if (!href) return;
         if (!href.startsWith('http')) href = 'https://www.naukri.com' + href;
-        if (href.includes('naukri.com')) out.push(href);
+        if (!href.includes('naukri.com')) return;
+        // Read the "posted" date + title straight off the search result card,
+        // so we can filter old jobs without opening each one.
+        const card = el.closest('.srp-jobtuple-wrapper, article.jobTuple, .cust-job-tuple, .jobTuple') || el.parentElement;
+        let posted = '';
+        if (card) {
+          const m = card.innerText.match(/(\d+\+?\s*(?:hour|day|week|month)s?\s*ago|just now|today|few hours? ago)/i);
+          posted = m ? m[0] : '';
+        }
+        out.push({ href, posted, title: (el.textContent || '').trim() });
       });
       return out;
     });
     let added = 0;
-    for (const l of links) {
-      const key = jobKey(l);
-      if (!jobMap.has(key)) { jobMap.set(key, l); added++; }
+    for (const c of cards) {
+      const key = jobKey(c.href);
+      if (!jobMap.has(key)) { jobMap.set(key, { link: c.href, posted: c.posted, title: c.title }); added++; }
     }
-    return { found: links.length, added };
+    return { found: cards.length, added };
   }
 
   for (const batch of keywordBatches) {
@@ -433,8 +442,33 @@ async function runBot() {
     console.log(`   ✅ All keywords searched — none missed.`);
   }
 
-  const jobLinks = [...jobMap.values()];
-  console.log(`\n   Total unique jobs across all keywords: ${jobLinks.length}\n`);
+  const maxJobAgeDays = parseInt(jobAge, 10);
+  // Convert Naukri's "X ago" text into a number of days. null = unparseable (keep it).
+  function parsePostedDays(text) {
+    if (!text) return null;
+    const t = text.toLowerCase();
+    if (t.includes('just now') || t.includes('today') || t.includes('few hour') || t.includes('hour')) return 0;
+    const num = parseInt((t.match(/\d+/) || ['0'])[0], 10);
+    if (t.includes('day')) return num;
+    if (t.includes('week')) return num * 7;
+    if (t.includes('month')) return num * 30;
+    if (t.includes('year')) return num * 365;
+    return null;
+  }
+
+  // Pre-filter by the posting date shown on the search cards — skip old jobs
+  // WITHOUT opening them (this is the big time saver).
+  const earlySkippedOld = [];
+  const jobLinks = [];
+  for (const entry of jobMap.values()) {
+    const d = parsePostedDays(entry.posted);
+    if (d !== null && d > maxJobAgeDays) {
+      earlySkippedOld.push({ title: entry.title, link: entry.link, posted: entry.posted });
+    } else {
+      jobLinks.push(entry.link);
+    }
+  }
+  console.log(`\n   Unique jobs: ${jobMap.size} | Pre-filtered out ${earlySkippedOld.length} old (>${maxJobAgeDays}d) | ${jobLinks.length} to open\n`);
   if (jobLinks.length === 0) {
     console.log(`No new jobs posted in the last ${jobAge} days. Check back later.`);
     await browser.close();
@@ -463,28 +497,25 @@ async function runBot() {
 
   // Step 4: Apply
   console.log('[4/4] Applying...\n');
-  console.log(`   Daily cap: will stop after ${maxApplications} successful applications.\n`);
-  const report = { applied: [], skippedExternal: [], skippedNoButton: [], skippedIrrelevant: [], skippedOld: [], failed: [] };
-
-  const maxJobAgeDays = parseInt(jobAge, 10);
-  // Convert Naukri's "Posted: X ago" text into a number of days.
-  // Returns null when the text can't be parsed (then we don't skip).
-  function parsePostedDays(text) {
-    if (!text) return null;
-    const t = text.toLowerCase();
-    if (t.includes('just now') || t.includes('today') || t.includes('few hour') || t.includes('hour')) return 0;
-    const num = parseInt((t.match(/\d+/) || ['0'])[0], 10);
-    if (t.includes('day')) return num;
-    if (t.includes('week')) return num * 7;
-    if (t.includes('month')) return num * 30;
-    if (t.includes('year')) return num * 365;
-    return null;
+  console.log(`   Daily cap: will stop after ${maxApplications} successful applications.`);
+  // Time budget: stop before the CI job timeout so the report still gets emailed.
+  const maxRuntimeMinutes = parseInt(process.env.MAX_RUNTIME_MINUTES || '0', 10);
+  const applyStartTime = Date.now();
+  if (maxRuntimeMinutes > 0) {
+    console.log(`   Time budget: will stop after ${maxRuntimeMinutes} min of applying.`);
   }
+  console.log('');
+  const report = { applied: [], skippedExternal: [], skippedNoButton: [], skippedIrrelevant: [], skippedOld: [...earlySkippedOld], failed: [] };
 
   for (let i = 0; i < jobLinks.length; i++) {
     // Stop once we hit the daily application cap.
     if (report.applied.length >= maxApplications) {
       console.log(`\n   Reached daily cap of ${maxApplications} applications — stopping (${jobLinks.length - i} jobs left unprocessed).`);
+      break;
+    }
+    // Stop if we're about to exceed the time budget (protects against CI timeout).
+    if (maxRuntimeMinutes > 0 && (Date.now() - applyStartTime) / 60000 >= maxRuntimeMinutes) {
+      console.log(`\n   Reached time budget of ${maxRuntimeMinutes} min — stopping to finish before workflow timeout (${jobLinks.length - i} jobs left unprocessed).`);
       break;
     }
     const jobLink = jobLinks[i];
