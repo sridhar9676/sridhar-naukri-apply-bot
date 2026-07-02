@@ -359,8 +359,10 @@ async function runBot() {
   const locationSlug = allLocations[0].toLowerCase().replace(/[^a-z0-9]+/g, '-');
   const locationParam = encodeURIComponent(allLocations.join(', '));
 
-  // How many keywords to send per search (Naukri handles several at once).
-  const BATCH_SIZE = parseInt(process.env.KEYWORD_BATCH_SIZE || '4', 10);
+  // How many keywords to send per search. Naukri collapses a multi-keyword
+  // `k=` query into a single ~20-result set, so we search ONE keyword per
+  // request to surface each keyword's own top results (far broader coverage).
+  const BATCH_SIZE = parseInt(process.env.KEYWORD_BATCH_SIZE || '1', 10);
   const keywordBatches = [];
   for (let b = 0; b < allKeywords.length; b += BATCH_SIZE) {
     keywordBatches.push(allKeywords.slice(b, b + BATCH_SIZE));
@@ -383,7 +385,6 @@ async function runBot() {
     const slug = group.join(' ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     const kParam = encodeURIComponent(group.join(', '));
     const searchUrl = `https://www.naukri.com/${slug}-jobs-in-${locationSlug}?k=${kParam}&l=${locationParam}&experience=${experience}&jobAge=${jobAge}`;
-    console.log(`   URL: ${searchUrl}`);
     await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
     await delay(3000);
     const cards = await page.evaluate(() => {
