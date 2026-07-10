@@ -39,8 +39,8 @@ JOB_LOCATION=Hyderabad,Bengaluru
 JOB_EXPERIENCE=4
 JOB_AGE=3
 NOTICE_PERIOD=30
-CURRENT_CTC=16
-EXPECTED_CTC=20
+CURRENT_CTC=
+EXPECTED_CTC=
 
 # Optional — Email Reports
 EMAIL_TO=your_email@gmail.com
